@@ -1,6 +1,12 @@
+# app/main.py
 from fastapi import FastAPI
-from . import routes
+from app.routes import router as jobs_router
 
-app = FastAPI(title="Microservicio Sabanas")
+app = FastAPI(title="Sabanas Server")
 
-app.include_router(routes.router)
+app.include_router(jobs_router)
+
+# healthcheck simple
+@app.get("/health")
+def health():
+    return {"ok": True}
