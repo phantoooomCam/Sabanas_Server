@@ -1,17 +1,18 @@
 # app/routes.py
-import os
 import uuid
+from decouple import config
 from fastapi import APIRouter, Depends, Header, BackgroundTasks, HTTPException, status
 from app.domain.schemas import JobSabanasRequest, JobAcceptedResponse
 from app import services
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "")
+# decouple lee .env automáticamente
+SERVICE_API_KEY = config("SERVICE_API_KEY", default="")
 
 def require_api_key(x_api_key: str | None = Header(default=None),
                     authorization: str | None = Header(default=None)):
-    expected = os.getenv("SERVICE_API_KEY", "")
+    expected = SERVICE_API_KEY
     token = x_api_key or (authorization.replace("Bearer ", "") if authorization else None)
     if not expected or not token or token.strip() != expected.strip():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Auth inválida")

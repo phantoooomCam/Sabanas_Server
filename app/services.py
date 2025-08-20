@@ -1,14 +1,14 @@
 # app/services.py
 import uuid
-import os
+from decouple import config
 from fastapi import HTTPException, status
 from app.domain import repository as repo
 from app.services.ftp_client import ftp_download
 from app.database import SessionLocal  # ajusta según tu database.py
 
-FTP_HOST = os.getenv("FTP_HOST", "ftp://192.168.100.200/")
-FTP_USER_RO = os.getenv("FTP_USER_RO", "")
-FTP_PASS_RO = os.getenv("FTP_PASS_RO", "")
+FTP_HOST    = config("FTP_HOST",    default="ftp://192.168.100.200/")
+FTP_USER_RO = config("FTP_USER_RO", default="")
+FTP_PASS_RO = config("FTP_PASS_RO", default="")
 
 def accept_job_sabana(id_archivo: int) -> tuple[str, dict]:
     """
