@@ -3,7 +3,7 @@ import uuid
 from decouple import config
 from fastapi import APIRouter, Depends, Header, BackgroundTasks, HTTPException, status
 from app.domain.schemas import JobSabanasRequest, JobAcceptedResponse
-from app import services
+from app import jobs_service as services
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -28,9 +28,9 @@ def enqueue_sabana_job(
 ):
     # (Opcional) idempotencia en memoria solo para dev
     # En prod: guarda Idempotency-Key en DB/redis.
-    job_id, row = services.accept_job_sabana(payload.id_archivo)
+    job_id, row = accept_job_sabana(payload.id_archivo)
     # Lanza worker en background para esta prueba: hará en_cola -> procesando + descarga
-    background.add_task(services.process_job_sabana, payload.id_archivo, correlation_id, False)
+    background.add_task(process_job_sabana, payload.id_archivo, correlation_id, False)
 
     return JobAcceptedResponse(
         job_id=job_id,
