@@ -44,3 +44,40 @@ def mark_error(db, id_archivo: int):
     """)
     db.execute(sql, {"id": id_archivo, "now": datetime.utcnow()})
     db.commit()
+
+
+# Insertar en BLOQUE
+
+def delete_registros_telefonicos_by_archivo(db, id_sabanas: int) -> int:
+    sql = text("""
+        DELETE FROM sabanas.registros_telefonicos
+        WHERE id_sabanas = :id_sabanas
+    """)
+    res = db.execute(sql, {"id_sabanas": id_sabanas})
+    db.commit()
+    return res.rowcount
+
+def insert_registros_telefonicos_bulk(db, rows: list[dict]) -> int:
+    """
+    rows: lista de dicts con EXACTAMENTE estas llaves:
+      id_sabanas, numero_a, numero_b, id_tipo_registro, fecha_hora,
+      duracion, latitud, longitud, azimuth, latitud_decimal,
+      longitud_decimal, altitud, coordenada_objetivo, imei, telefono
+    """
+    if not rows:
+        return 0
+
+    sql = text("""
+        INSERT INTO sabanas.registros_telefonicos (
+            id_sabanas, numero_a, numero_b, id_tipo_registro, fecha_hora,
+            duracion, latitud, longitud, azimuth, latitud_decimal,
+            longitud_decimal, altitud, coordenada_objetivo, imei, telefono
+        ) VALUES (
+            :id_sabanas, :numero_a, :numero_b, :id_tipo_registro, :fecha_hora,
+            :duracion, :latitud, :longitud, :azimuth, :latitud_decimal,
+            :longitud_decimal, :altitud, :coordenada_objetivo, :imei, :telefono
+        )
+    """)
+    db.execute(sql, rows)  # executemany con lista de dicts
+    db.commit()
+    return len(rows)
