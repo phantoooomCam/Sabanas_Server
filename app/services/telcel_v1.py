@@ -14,7 +14,7 @@ from app.domain import repository as repo
 
 
 # -------------------------------------------------------------------
-# Enum TipoRegistroSabana (IDs iguales al enum de C#)
+# Enum TipoRegistroSabana (IDs iguales al enum/tablas)
 # -------------------------------------------------------------------
 class TipoRegistroSabana(Enum):
     DATOS = 0
@@ -29,7 +29,6 @@ class TipoRegistroSabana(Enum):
     WIFI = 9
     REENVIO_SAL = 10
     REENVIO_ENT = 11
-
 
 
 # -------------------------------------------------------------------
@@ -64,6 +63,7 @@ def _score_header_row(values) -> int:
     return hits
 
 def es_numero_valido(num: Optional[str]) -> bool:
+    """Solo valida si parece un MSISDN; si no lo es, igual lo guardaremos crudo."""
     if num is None:
         return False
     s = str(num).strip().lower()
@@ -76,6 +76,7 @@ def es_numero_valido(num: Optional[str]) -> bool:
     return True
 
 def _clean_msisdn(x: str) -> Optional[str]:
+    """Devuelve solo dígitos si luce como número; si no, None (luego dejamos el crudo)."""
     if not es_numero_valido(x):
         return None
     only = re.sub(r"\D", "", str(x))
@@ -94,6 +95,7 @@ def _dms_to_decimal(s: str) -> Optional[float]:
     if s is None:
         return None
     s = str(s).strip().replace(",", ".")
+    # Ya vienen en decimal
     if "°" not in s and "'" not in s and '"' not in s:
         try:
             return float(s)
@@ -110,26 +112,33 @@ def _dms_to_decimal(s: str) -> Optional[float]:
 
 
 # -------------------------------------------------------------------
-# Mapeo de tipo (según tu XLSX real)
+# Mapeo de tipo (tolerante a variantes comunes)
 # -------------------------------------------------------------------
 def _map_tipo(raw: str, numero_a: str = None, telefono: str = None) -> int:
     t = _norm(raw or "")
     if t.startswith("datos"):
         return TipoRegistroSabana.DATOS.value
-    elif t.startswith("mensaj") and "ent" in t:
+    if t.startswith("mms") or "multimedia" in t:
+        return TipoRegistroSabana.MMS.value
+    if t.startswith("mensaj") and ("ent" in t or "entr" in t):
         return TipoRegistroSabana.SMS_2VIAS_ENT.value
-    elif t.startswith("mensaj") and "sal" in t:
+    if t.startswith("mensaj") and ("sal" in t or "saliente" in t):
         return TipoRegistroSabana.SMS_2VIAS_SAL.value
-    elif t.startswith("voz entrante"):
+    if t.startswith("voz entrante") or (t.startswith("voz") and "entr" in t):
         return TipoRegistroSabana.VOZ_ENTRANTE.value
-    elif t.startswith("voz saliente"):
+    if t.startswith("voz saliente") or (t.startswith("voz") and "sal" in t):
         return TipoRegistroSabana.VOZ_SALIENTE.value
-    elif t.startswith("voz transfer"):
+    if "transfer" in t:
         return TipoRegistroSabana.VOZ_TRANSFER.value
-    elif t.startswith("voz transito"):
+    if "transito" in t or "tránsito" in t:
         return TipoRegistroSabana.VOZ_TRANSITO.value
-    else:
-        return TipoRegistroSabana.NINGUNO.value
+    if "wifi" in t:
+        return TipoRegistroSabana.WIFI.value
+    if "reenv" in t and ("sal" in t or "saliente" in t):
+        return TipoRegistroSabana.REENVIO_SAL.value
+    if "reenv" in t and ("ent" in t or "entrante" in t):
+        return TipoRegistroSabana.REENVIO_ENT.value
+    return TipoRegistroSabana.NINGUNO.value
 
 
 # -------------------------------------------------------------------
@@ -173,6 +182,7 @@ def _find_table_in_sheet(df_raw: pd.DataFrame) -> Optional[pd.DataFrame]:
     df = df_raw.iloc[best_idx + 1 :].copy()
     df.columns = canon_headers
     df = df.dropna(axis=1, how="all")
+    # strip de strings
     df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
     return df
 
@@ -196,21 +206,44 @@ def _load_all_sheets(local_path: str) -> List[pd.DataFrame]:
 
 
 # -------------------------------------------------------------------
+# Parseo robusto de fecha/hora (intenta varios formatos comunes Telcel)
+# -------------------------------------------------------------------
+_FORMATOS_DATETIME = [
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%y %H:%M:%S",
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%y %H:%M:%S",
+]
+
+def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
+    f = fecha.astype(str).str.strip().str.replace(r"[./]", "-", regex=True)
+    h = hora.astype(str).str.strip()
+    combo = f + " " + h
+    ts = pd.Series([pd.NaT] * len(combo))
+    for fmt in _FORMATOS_DATETIME:
+        cand = pd.to_datetime(combo, format=fmt, errors="coerce")
+        # si mejoró, nos quedamos
+        if cand.notna().sum() > ts.notna().sum():
+            ts = cand
+        if ts.notna().all():
+            break
+    if ts.isna().all():
+        ts = pd.to_datetime(combo, dayfirst=True, errors="coerce")
+    return ts
+
+
+# -------------------------------------------------------------------
 # Normalización de filas
 # -------------------------------------------------------------------
 def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
     cols = set(map(str, tbl.columns))
 
     if "fecha" in cols and "hora" in cols:
-        fecha_hora = pd.to_datetime(
-            tbl["fecha"].astype(str).str.strip() + " " + tbl["hora"].astype(str).str.strip(),
-            format="%d-%m-%y %H:%M:%S", errors="coerce"
-        )
+        fecha_hora = _parse_fecha_hora(tbl["fecha"], tbl["hora"])
     elif "fecha" in cols:
-        fecha_hora = pd.to_datetime(
-            tbl["fecha"].astype(str).str.strip(),
-            format="%d-%m-%y", errors="coerce"
-        )
+        # Intenta solo fecha
+        f = tbl["fecha"].astype(str).str.strip().str.replace(r"[./]", "-", regex=True)
+        fecha_hora = pd.to_datetime(f, dayfirst=True, errors="coerce")
     else:
         fecha_hora = pd.Series([pd.NaT] * len(tbl))
 
@@ -232,14 +265,11 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
         raw_a = numero_a.iloc[i] if numero_a is not None else None
         raw_b = numero_b.iloc[i] if numero_b is not None else None
 
-        a = _clean_msisdn(raw_a) if raw_a is not None else None
-        b = _clean_msisdn(raw_b) if raw_b is not None else None
-
-        # Si no es número válido, conservar el texto original
-        if a is None and raw_a:
-            a = str(raw_a).strip()
-        if b is None and raw_b:
-            b = str(raw_b).strip()
+        # 1) Si es MSISDN, dejar solo dígitos; si no, guardar el texto original
+        a_clean = _clean_msisdn(raw_a) if raw_a is not None else None
+        b_clean = _clean_msisdn(raw_b) if raw_b is not None else None
+        a = a_clean if a_clean is not None else (str(raw_a).strip() if raw_a not in (None, "") else None)
+        b = b_clean if b_clean is not None else (str(raw_b).strip() if raw_b not in (None, "") else None)
 
         lat_val = lat_raw.iloc[i] if lat_raw is not None else None
         lon_val = lon_raw.iloc[i] if lon_raw is not None else None
@@ -247,9 +277,19 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
         lon_d = _dms_to_decimal(lon_val) if lon_val not in (None, "", "NaN") else None
         az = azimuth_raw.iloc[i] if azimuth_raw is not None and not pd.isna(azimuth_raw.iloc[i]) else None
         imei = _clean_imei(imei_raw.iloc[i]) if imei_raw is not None else None
-        tel = _clean_msisdn(tel_raw.iloc[i]) if tel_raw is not None else (a or None)
+
+        # 2) Telefono: mismo criterio — si no es dígitos, guardar crudo
+        raw_tel = tel_raw.iloc[i] if tel_raw is not None else None
+        tel_clean = _clean_msisdn(raw_tel) if raw_tel is not None else None
+        tel = tel_clean if tel_clean is not None else (
+            str(raw_tel).strip() if raw_tel not in (None, "") else (a or None)
+        )
+
         tipo_val = tipo_raw.iloc[i] if tipo_raw is not None else None
         id_tipo = _map_tipo(tipo_val, numero_a=a, telefono=tel)
+
+        # 3) Altitud siempre 0; coordenada_objetivo = False solo si NO hay coords
+        coord_obj = False if (lat_d is None and lon_d is None) else None
 
         rows.append({
             "id_sabanas": int(id_sabanas),
@@ -263,8 +303,8 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
             "azimuth": float(az) if az is not None else None,
             "latitud_decimal": float(lat_d) if lat_d is not None else None,
             "longitud_decimal": float(lon_d) if lon_d is not None else None,
-            "altitud": None,
-            "coordenada_objetivo": None,
+            "altitud": 0.0,                     # <--- siempre 0
+            "coordenada_objetivo": coord_obj,   # <--- False si no hay coordenadas; en caso contrario NULL
             "imei": imei,
             "telefono": tel,
         })
@@ -292,7 +332,7 @@ def run_telcel_v1_etl(id_sabanas: int, local_path: str, correlation_id: Optional
         rows = _frame_to_rows(tbl, id_sabanas=id_sabanas)
         all_rows.extend(rows)
 
-    # Deduplicación como en C#
+    # Deduplicación simple
     seen = set()
     deduped_registros = []
     for r in all_rows:
@@ -306,7 +346,7 @@ def run_telcel_v1_etl(id_sabanas: int, local_path: str, correlation_id: Optional
     imeis = {r["imei"]: r["imei"] for r in all_rows if r.get("imei")}
     unique_imeis = list(imeis.values())
 
-    imsis = {r["numero_a"]: r["numero_a"] for r in all_rows if r.get("numero_a") and len(r["numero_a"]) > 12}
+    imsis = {r["numero_a"]: r["numero_a"] for r in all_rows if r.get("numero_a") and len(str(r["numero_a"])) > 12}
     unique_imsis = list(imsis.values())
 
     db = SessionLocal()
