@@ -380,16 +380,18 @@ def run_telcel_v1_etl(id_sabanas: int, local_path: str, correlation_id: Optional
         rows = _frame_to_rows(tbl, id_sabanas=id_sabanas)
         all_rows.extend(rows)
 
-    # # Deduplicación simple
-    # seen = set()
-    # deduped_registros = []
-    # for r in all_rows:
-    #     key = (r.get("telefono"), r.get("numero_a"), r.get("numero_b"),
-    #            r.get("fecha_hora"), r.get("imei"))
-    #     if key not in seen:
-    #         seen.add(key)
-    #         deduped_registros.append(r)
-    # all_rows = deduped_registros
+    # --- Filtro: eliminar duplicados conservando el de mayor duración ---
+    dedup_map = {}
+    for r in all_rows:
+        key = (r.get("numero_a"), r.get("fecha_hora"), r.get("latitud"), r.get("longitud"))
+        if key not in dedup_map:
+            dedup_map[key] = r
+        else:
+            # Comparar duración y conservar el mayor
+            if r.get("duracion", 0) > dedup_map[key].get("duracion", 0):
+                dedup_map[key] = r
+
+    all_rows = list(dedup_map.values())
 
     imeis = {r["imei"]: r["imei"] for r in all_rows if r.get("imei")}
     unique_imeis = list(imeis.values())
@@ -415,4 +417,3 @@ def run_telcel_v1_etl(id_sabanas: int, local_path: str, correlation_id: Optional
         print(f"[{correlation_id}] Ejemplo fila: {all_rows[0]}")
 
     return len(all_rows)   # <-- siempre devolvemos un entero
-
