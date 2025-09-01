@@ -15,7 +15,7 @@ from app.database import SessionLocal
 from app.services.telcel_v1 import run_telcel_v1_etl
 from app.services.movistar import run_movistar_etl
 from app.services.att import run_att_v1_etl
-from app.services.altan import run_altan_v1_etl
+from app.services.altan import run_altan_etl  # <— corregido (antes: run_altan_v1_etl)
 
 
 PROVIDER_BY_ID = {
@@ -34,14 +34,6 @@ PROVIDER_BY_ID = {
 
     # Altán
     12: "ALTAN",
-
-    # Otros (si los quisieras enrutar distinto en el futuro)
-    # 6: "VIRGIN",
-    # 7: "BAIT",
-    # 8: "TELMEX",
-    # 9: "OXXO",
-    # 10:"IZZI",
-    # 11:"PERSONALIZADA",
 }
 
 
@@ -254,7 +246,7 @@ def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = No
             inserted = _normalize_inserted_from_result(result)
 
         elif provider == "ALTAN":
-            result = run_altan_v1_etl(
+            result = run_altan_etl(   # <— corregido (antes: run_altan_v1_etl)
                 db_session=db,
                 id_sabanas=id_archivo,
                 file_path=local_path
