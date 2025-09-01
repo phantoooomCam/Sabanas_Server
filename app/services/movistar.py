@@ -505,47 +505,43 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
     return rows
 
 
-def run_movistar_etl(db_session, id_sabanas: int, file_path: str) -> Dict:
+def run_movistar_etl(db_session, id_sabanas: int, file_path: str) -> int:
     """
     Punto de entrada del ETL para Movistar.
     - Lee todas las hojas y todos los bloques (múltiples encabezados)
-    - Normaliza
-    - Dedup
+    - Normaliza y dedup
     - Inserta en sabanas.registros_telefonicos
+    - RETORNA: int (filas insertadas) | -1 en error  ← requerido por jobs_service
     """
-    stats = Stats()
-    frames = _read_all_sheets(file_path)
+    try:
+        stats = Stats()
+        frames = _read_all_sheets(file_path)
 
-    all_rows: List[Dict] = []
-    for df in frames:
-        if df is None or df.empty:
-            continue
-        rows = _normalize_rows(df, id_sabanas, stats)
-        if rows:
-            all_rows.extend(rows)
+        all_rows: List[Dict] = []
+        for df in frames:
+            if df is None or df.empty:
+                continue
+            rows = _normalize_rows(df, id_sabanas, stats)
+            if rows:
+                all_rows.extend(rows)
 
-    # Inserción en DB
-    if repository is None:
-        # En entornos de prueba sin repo, solo devolvemos el resumen
-        return {
-            "id_sabanas": id_sabanas,
-            "total_leidas": stats.leidas,
-            "total_normalizadas": len(all_rows),
-            "stats": stats.__dict__,
-            "warning": "repository no disponible; no se insertó en DB",
-        }
+        # Sin repo (tests/local): devolver conteo como entero
+        if repository is None:
+            return int(len(all_rows))
 
-    # Borra previos del mismo archivo (como en Telcel v1)
-    if hasattr(repository, "delete_registros_telefonicos_by_archivo"):
-        repository.delete_registros_telefonicos_by_archivo(db_session, id_sabanas)
+        # Borra previos del mismo archivo (como en Telcel v1)
+        if hasattr(repository, "delete_registros_telefonicos_by_archivo"):
+            repository.delete_registros_telefonicos_by_archivo(db_session, id_sabanas)
 
-    # Inserta bulk
-    if all_rows and hasattr(repository, "insert_registros_telefonicos_bulk"):
-        repository.insert_registros_telefonicos_bulk(db_session, all_rows)
+        # Inserta bulk
+        inserted = 0
+        if all_rows and hasattr(repository, "insert_registros_telefonicos_bulk"):
+            repository.insert_registros_telefonicos_bulk(db_session, all_rows)
+            inserted = len(all_rows)
 
-    return {
-        "id_sabanas": id_sabanas,
-        "total_leidas": stats.leidas,
-        "total_insertadas": len(all_rows),
-        "stats": stats.__dict__,
-    }
+        return int(inserted)
+
+    except Exception as e:
+        # Log opcional:
+        print(f"[MOVISTAR ETL] Error id={id_sabanas}: {e}")
+        return -1
