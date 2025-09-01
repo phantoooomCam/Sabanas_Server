@@ -14,6 +14,33 @@ from app.database import SessionLocal
 # Parsers/ETL disponibles
 from app.services.telcel_v1 import run_telcel_v1_etl
 from app.services.movistar import run_movistar_etl
+from app.services.att import run_att_v1_etl
+
+
+PROVIDER_BY_ID = {
+    # Telcel (todos sus “formatos”)
+    1: "TELCEL",   # Telcel
+    2: "TELCEL",   # TelcelNuevoFormato
+    3: "TELCEL",   # TelcelIMEI
+    14:"TELCEL",   # TelcelIMEINuevoFormato
+
+    # AT&T (formatos)
+    4: "ATT",      # AT&T
+    13:"ATT",      # ATTNuevoFormato
+
+    # Movistar
+    5: "MOVISTAR", # Movistar
+
+    # Otros (si los quisieras enrutar distinto en el futuro)
+    # 6: "VIRGIN",
+    # 7: "BAIT",
+    # 8: "TELMEX",
+    # 9: "OXXO",
+    # 10:"IZZI",
+    # 11:"PERSONALIZADA",
+    # 12:"ALTAN",
+}
+
 
 # ===== Config =====
 FTP_HOST      = config("FTP_HOST", default="ftp://192.168.100.200/")
@@ -27,62 +54,64 @@ LOCAL_TMP_DIR = config("LOCAL_TMP_DIR", default="/tmp/sabanas")  # en Windows aj
 # -----------------------------------------------------------------------------
 def _detect_provider_from_row(row: dict) -> str:
     """
-    Intenta inferir la compañía/proveedor a partir del registro en DB.
-    Devuelve uno de: 'TELCEL' | 'MOVISTAR'
-    Default: 'TELCEL' (para mantener compatibilidad hacia atrás).
+    Devuelve 'TELCEL' | 'MOVISTAR' | 'ATT'
+    Default: 'TELCEL'
     """
-    # Intentar varias claves posibles
+    # 1) Por ID (lo más confiable)
+    cid = row.get("id_compania_telefonica")
+    if cid is not None:
+        try:
+            prov = PROVIDER_BY_ID.get(int(cid))
+            if prov:
+                return prov
+        except Exception:
+            pass
+
+    # 2) Por nombre (strings en la fila)
     candidates = []
     for k in ("compania", "compañia", "carrier", "operador", "proveedor", "company", "company_name"):
         if k in row and row[k]:
             candidates.append(str(row[k]).strip().upper())
 
-    # A veces existe un id numérico; si lo tienes normaliza aquí:
-    # id_compania_telefonica: 1=Telcel, 2=Movistar, etc. (ajústalo si aplica)
-    if "id_compania_telefonica" in row and row["id_compania_telefonica"] is not None:
-        try:
-            cid = int(row["id_compania_telefonica"])
-            if cid == 2:
-                return "MOVISTAR"
-            if cid == 1:
-                return "TELCEL"
-        except Exception:
-            pass
-
     for val in candidates:
+        # Movistar
         if "MOVISTAR" in val or "TELEFONICA" in val or "TELEFÓNICA" in val:
             return "MOVISTAR"
+        # Telcel (todas sus variantes)
         if "TELCEL" in val:
             return "TELCEL"
+        if "TELCELNUEVOFORMATO" in val or "TELCELIMEI" in val or "TELCELIMEINUEVOFORMATO" in val:
+            return "TELCEL"
+        # AT&T (todas sus variantes)
+        if "AT&T" in val or "ATT" in val or "ATTMX" in val or "ATTNUEVOFORMATO" in val:
+            return "ATT"
 
-    # Por defecto, asumimos Telcel
+    # 3) Fallback por nombre de archivo (útil cuando DB viene vacío/inconsistente)
+    try:
+        fname = os.path.basename(row.get("file_path") or row.get("nombre_archivo") or "").upper()
+        if "AT&T" in fname or "ATT" in fname:
+            return "ATT"
+        if "MOVISTAR" in fname or "TELEFONICA" in fname or "TELEFÓNICA" in fname:
+            return "MOVISTAR"
+        if "TELCEL" in fname:
+            return "TELCEL"
+    except Exception:
+        pass
+
+    # 4) Default
     return "TELCEL"
 
 
+
 def _normalize_inserted_from_result(result) -> int:
-    """
-    Cada ETL puede devolver distintos formatos:
-    - Telcel v1: int (insertadas) o -1 en error
-    - Movistar: dict con 'total_insertadas' o 'total_normalizadas'
-    Esta función estandariza a un int de filas insertadas.
-    """
-    if isinstance(result, int):
-        return result
 
-    if isinstance(result, dict):
-        if "total_insertadas" in result and result["total_insertadas"] is not None:
-            try:
-                return int(result["total_insertadas"])
-            except Exception:
-                pass
-        if "total_normalizadas" in result and result["total_normalizadas"] is not None:
-            try:
-                return int(result["total_normalizadas"])
-            except Exception:
-                pass
-
-    # Si no se puede inferir, tratamos como 0 (no insertó filas)
-    return 0
+    try:
+        if isinstance(result, int):
+            return result
+        # si algún ETL devuelve dict/tuple, adapta aquí
+        return int(result)
+    except Exception:
+        return -1
 
 
 # -----------------------------------------------------------------------------
@@ -174,13 +203,10 @@ def process_job_sabana(
     finally:
         db.close()
 
-
 def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = None) -> bool:
     """
-    Despacha al ETL correcto según la compañía del archivo.
-    Estandariza el resultado a True/False.
+    Despacha al ETL correspondiente según la compañía.
     """
-    # Traer la fila para detectar proveedor
     db = SessionLocal()
     try:
         row = repo.get_archivo_by_id(db, id_archivo)
@@ -188,37 +214,55 @@ def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = No
             print(f"[{correlation_id}] No existe id_archivo={id_archivo}")
             return False
 
+        # Pista del camino: añade la ruta del archivo a row para que el detector pueda usarla
+        row = dict(row)
+        row.setdefault("file_path", local_path)
+
         provider = _detect_provider_from_row(row)
+
+        # Fallback extra solo por el nombre del archivo recibido (por si acaso)
+        try:
+            fname = os.path.basename(local_path).upper()
+            if "AT&T" in fname or "ATT" in fname:
+                provider = "ATT"
+            elif "MOVISTAR" in fname or "TELEFONICA" in fname or "TELEFÓNICA" in fname:
+                provider = "MOVISTAR"
+            elif "TELCEL" in fname:
+                provider = "TELCEL"
+        except Exception:
+            pass
+
         print(f"[{correlation_id}] Ejecutando ETL para proveedor={provider} id={id_archivo}")
 
         if provider == "MOVISTAR":
-            # Movistar necesita la sesión de DB (su ETL inserta directamente)
             result = run_movistar_etl(db_session=db, id_sabanas=id_archivo, file_path=local_path)
             inserted = _normalize_inserted_from_result(result)
 
-        else:
-            # Telcel v1 (mantener firma original)
+        elif provider == "ATT":
+            result = run_att_v1_etl(
+                id_sabanas=id_archivo,
+                local_path=local_path,
+                correlation_id=correlation_id
+            )
+            inserted = _normalize_inserted_from_result(result)
+
+        else:  # TELCEL (default)
             result = run_telcel_v1_etl(
                 id_sabanas=id_archivo,
                 local_path=local_path,
                 correlation_id=correlation_id
             )
-            # Telcel v1 típicamente devuelve int (insertadas) o -1
             inserted = _normalize_inserted_from_result(result)
 
         if inserted == -1:
             print(f"[{correlation_id}] ETL devolvió error para id={id_archivo}")
             return False
-        elif inserted == 0:
-            print(f"[{correlation_id}] ETL no insertó filas (id={id_archivo})")
-            # Decide si quieres tratar 0 como éxito o fallo; dejamos True como antes
-            return True
-        else:
-            print(f"[{correlation_id}] ETL finalizó OK con {inserted} filas (id={id_archivo})")
-            return True
+
+        print(f"[{correlation_id}] ETL OK ({provider}) – filas insertadas: {inserted}")
+        return True
 
     except Exception as ex:
-        print(f"[{correlation_id}] Error en ETL (proveedor desconocido o fallo interno) id={id_archivo}: {ex}")
+        print(f"[{correlation_id}] Error en ETL id={id_archivo}: {ex}")
         return False
     finally:
         db.close()
