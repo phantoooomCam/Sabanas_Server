@@ -474,6 +474,8 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
 
     final = pd.concat([with_coords, without_coords], axis=0, ignore_index=True)
     stats.validas += len(final)
+    
+    final = final.sort_values(["fecha_hora", "numero_a_clean", "numero_b_clean"], ascending=[True, True, True]).reset_index(drop=True)
 
     # Armar registros para inserción (contrato Telcel v1)
     rows: List[Dict] = []
