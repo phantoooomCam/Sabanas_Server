@@ -5,7 +5,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -149,7 +149,10 @@ def _pad_left(num: int, width: int) -> str:
     return s.zfill(width)
 
 
-def _parse_fecha_hora(fecha_raw: Optional[str | int | float], hora_raw: Optional[str | int | float]) -> Optional[datetime]:
+def _parse_fecha_hora(
+    fecha_raw: Optional[str | int | float],
+    hora_raw: Optional[str | int | float],
+) -> Optional[datetime]:
     """
     Movistar suele traer FECHA EVENTO como yyyymmdd y HORA EVENTO como hhmmss.
     Aun así, toleramos otras variantes.
@@ -246,67 +249,104 @@ def _to_decimal(coord: Optional[str | float | int]) -> Optional[float]:
 
 
 # -----------------------------
-# Lectura / detección de cabecera
+# Lectura / detección de cabeceras y bloques
 # -----------------------------
 
 def _normalize_colname(c: str) -> str:
     return re.sub(r"\s+", " ", str(c).strip()).upper()
 
 
-def _find_header_row(df: pd.DataFrame) -> Optional[int]:
+def _find_header_rows(df: pd.DataFrame, max_scan: int = 400, threshold: int = 5) -> List[int]:
     """
-    Busca una fila que contenga un subconjunto mayoritario de MOVISTAR_EXPECTED_TOKENS.
+    Devuelve TODOS los índices de filas que parecen encabezado.
+    Umbral (threshold): número mínimo de tokens esperados presentes en la fila.
     """
-    max_rows = min(len(df), 80)
     tokens = {t.upper() for t in MOVISTAR_EXPECTED_TOKENS}
+    max_rows = min(len(df), max_scan)
 
-    best_idx, best_score = None, -1
+    header_idxs: List[int] = []
     for i in range(max_rows):
-        row_vals = { _normalize_colname(x) for x in df.iloc[i].tolist() if str(x).strip() != "" }
+        row_vals = {
+            _normalize_colname(x)
+            for x in df.iloc[i].tolist()
+            if str(x).strip() != ""
+        }
         score = len(tokens.intersection(row_vals))
-        if score > best_score:
-            best_score, best_idx = score, i
+        if score >= threshold:
+            header_idxs.append(i)
 
-    # Exigir al menos 5 columnas clave reconocidas para aceptarlo como header
-    return best_idx if best_score >= 5 else None
+    return header_idxs
 
 
 def _read_all_sheets(path: str) -> List[pd.DataFrame]:
     """
-    Lee todas las hojas relevantes del Excel (o CSV) y devuelve dataframes con cabeceras bien puestas.
+    Lee todas las hojas y, dentro de cada hoja, TODOS los bloques (si hay varios encabezados).
+    Cada bloque se convierte en un DataFrame con columnas normalizadas.
     """
     frames: List[pd.DataFrame] = []
 
+    # CSV/TXT directo
     if path.lower().endswith(".csv") or path.lower().endswith(".txt"):
         df = pd.read_csv(path, dtype=str, engine="python")
         df.columns = [_normalize_colname(c) for c in df.columns]
         frames.append(df)
         return frames
 
-    # Excel con múltiples hojas
+    # Excel con (posibles) múltiples hojas y múltiples bloques por hoja
     xls = pd.read_excel(path, sheet_name=None, dtype=str, header=None, engine="openpyxl")  # type: ignore
     for sheet_name, raw in (xls or {}).items():
         if raw is None or raw.empty:
             continue
 
-        header_row = _find_header_row(raw)
-        if header_row is None:
-            # Hoja no relevante
+        header_idxs = _find_header_rows(raw)
+        if not header_idxs:
             continue
 
-        df = raw.iloc[header_row + 1 :].copy()
-        df.columns = [_normalize_colname(c) for c in raw.iloc[header_row].tolist()]
-        # Quedarnos solo con columnas de interés si existen
-        keep = [c for c in (_normalize_colname(c) for c in MOVISTAR_EXPECTED_TOKENS) if c in df.columns]
-        if not keep:
-            continue
+        # Añadimos un "final ficticio" para cortar el último bloque
+        cut_points = header_idxs + [len(raw)]
 
-        df = df[keep]
-        # Descarta filas completamente vacías
-        df = df.replace({np.nan: None})
-        df = df.dropna(how="all")
-        if not df.empty:
-            frames.append(df)
+        for start_idx, end_idx in zip(cut_points[:-1], cut_points[1:]):
+            # Header = fila start_idx; datos = (start_idx + 1) .. (end_idx - 1)
+            header_row = start_idx
+            data_start = header_row + 1
+            data_end = end_idx  # no inclusive en iloc
+
+            if data_start >= data_end:
+                continue  # bloque vacío
+
+            block = raw.iloc[data_start:data_end].copy()
+            header_values = [_normalize_colname(c) for c in raw.iloc[header_row].tolist()]
+            block.columns = header_values
+
+            # Nos quedamos solo con columnas de interés presentes
+            keep = [c for c in (_normalize_colname(c) for c in MOVISTAR_EXPECTED_TOKENS) if c in block.columns]
+            if not keep:
+                continue
+
+            block = block[keep]
+
+            # Quitar filas totalmente vacías
+            block = block.replace({np.nan: None})
+            block = block.dropna(how="all")
+            if block.empty:
+                continue
+
+            # (Opcional) Algunas veces el header se repite dentro del bloque: eliminamos esas filas
+            def _row_looks_like_header(r) -> bool:
+                try:
+                    t1 = str(r.get("TIPO CDR", "")).strip().upper() == "TIPO CDR"
+                    t2 = str(r.get("NUMERO A", "")).strip().upper() == "NUMERO A"
+                    t3 = str(r.get("TIPO EVENTO", "")).strip().upper() == "TIPO EVENTO"
+                    return t1 or t2 or t3
+                except Exception:
+                    return False
+
+            mask_headerlike = block.apply(_row_looks_like_header, axis=1)
+            if mask_headerlike.any():
+                block = block[~mask_headerlike]
+
+            if not block.empty:
+                frames.append(block)
 
     return frames
 
@@ -344,7 +384,7 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
         "LATITUD": "latitud",
         "LONGITUD": "longitud",
     }
-    colmap = { _normalize_colname(k): v for k, v in alias.items() }
+    colmap = {_normalize_colname(k): v for k, v in alias.items()}
     df = df.rename(columns=colmap)
 
     # Asegurar columnas faltantes
@@ -376,7 +416,7 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
         _map_tipo_registro(c, e) for c, e in zip(df["tipo_cdr"], df["tipo_evento"])
     ]
 
-    # Reglas de descarte / defaults
+    # Reglas de descarte / defaults (ACORDADAS)
     # 1) numero_a obligatorio
     mask_numero_a = df["numero_a_clean"].notna()
     stats.descartadas_numero_a += int((~mask_numero_a).sum())
@@ -403,7 +443,7 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
         df["lat_dec"].notna() & df["lon_dec"].notna(), None, False
     )
 
-    # DEDUP
+    # DEDUP (ACORDADO)
     with_coords = df[df["lat_dec"].notna() & df["lon_dec"].notna()].copy()
     without_coords = df[df["lat_dec"].isna() | df["lon_dec"].isna()].copy()
 
@@ -436,13 +476,16 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
     stats.validas += len(final)
 
     # Armar registros para inserción (contrato Telcel v1)
+    rows: List[Dict] = []
     for r in final.itertuples(index=False):
         rows.append(
             {
                 "id_sabanas": id_sabanas,
                 "numero_a": r.numero_a_clean,
                 "numero_b": r.numero_b_clean,
-                "id_tipo_registro": int(r.id_tipo_registro) if pd.notna(r.id_tipo_registro) else CTG_TIPO_REGISTRO_IDS["Ninguno"],
+                "id_tipo_registro": int(r.id_tipo_registro)
+                if pd.notna(r.id_tipo_registro)
+                else CTG_TIPO_REGISTRO_IDS["Ninguno"],
                 "fecha_hora": r.fecha_hora,
                 "duracion": int(r.duracion_s) if pd.notna(r.duracion_s) else 0,
                 "latitud": r.latitud if pd.notna(r.latitud) else None,
@@ -451,7 +494,9 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
                 "latitud_decimal": float(r.lat_dec) if pd.notna(r.lat_dec) else None,
                 "longitud_decimal": float(r.lon_dec) if pd.notna(r.lon_dec) else None,
                 "altitud": float(r.altitud),
-                "coordenada_objetivo": None if (pd.notna(r.lat_dec) and pd.notna(r.lon_dec)) else False,
+                "coordenada_objetivo": None
+                if (pd.notna(r.lat_dec) and pd.notna(r.lon_dec))
+                else False,
                 "imei": r.imei_clean if pd.notna(r.imei_clean) else None,
                 "telefono": r.numero_a_clean,
             }
@@ -463,7 +508,7 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
 def run_movistar_etl(db_session, id_sabanas: int, file_path: str) -> Dict:
     """
     Punto de entrada del ETL para Movistar.
-    - Lee todas las hojas del archivo
+    - Lee todas las hojas y todos los bloques (múltiples encabezados)
     - Normaliza
     - Dedup
     - Inserta en sabanas.registros_telefonicos
