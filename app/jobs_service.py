@@ -15,6 +15,7 @@ from app.database import SessionLocal
 from app.services.telcel_v1 import run_telcel_v1_etl
 from app.services.movistar import run_movistar_etl
 from app.services.att import run_att_v1_etl
+from app.services.altan import run_altan_v1_etl
 
 
 PROVIDER_BY_ID = {
@@ -22,14 +23,17 @@ PROVIDER_BY_ID = {
     1: "TELCEL",   # Telcel
     2: "TELCEL",   # TelcelNuevoFormato
     3: "TELCEL",   # TelcelIMEI
-    14:"TELCEL",   # TelcelIMEINuevoFormato
+    14: "TELCEL",  # TelcelIMEINuevoFormato
 
     # AT&T (formatos)
     4: "ATT",      # AT&T
-    13:"ATT",      # ATTNuevoFormato
+    13: "ATT",     # ATTNuevoFormato
 
     # Movistar
     5: "MOVISTAR", # Movistar
+
+    # Altán
+    12: "ALTAN",
 
     # Otros (si los quisieras enrutar distinto en el futuro)
     # 6: "VIRGIN",
@@ -38,7 +42,6 @@ PROVIDER_BY_ID = {
     # 9: "OXXO",
     # 10:"IZZI",
     # 11:"PERSONALIZADA",
-    # 12:"ALTAN",
 }
 
 
@@ -54,7 +57,7 @@ LOCAL_TMP_DIR = config("LOCAL_TMP_DIR", default="/tmp/sabanas")  # en Windows aj
 # -----------------------------------------------------------------------------
 def _detect_provider_from_row(row: dict) -> str:
     """
-    Devuelve 'TELCEL' | 'MOVISTAR' | 'ATT'
+    Devuelve 'TELCEL' | 'MOVISTAR' | 'ATT' | 'ALTAN'
     Default: 'TELCEL'
     """
     # 1) Por ID (lo más confiable)
@@ -74,13 +77,14 @@ def _detect_provider_from_row(row: dict) -> str:
             candidates.append(str(row[k]).strip().upper())
 
     for val in candidates:
+        # Altán
+        if "ALTAN" in val or "ALTÁN" in val:
+            return "ALTAN"
         # Movistar
         if "MOVISTAR" in val or "TELEFONICA" in val or "TELEFÓNICA" in val:
             return "MOVISTAR"
         # Telcel (todas sus variantes)
-        if "TELCEL" in val:
-            return "TELCEL"
-        if "TELCELNUEVOFORMATO" in val or "TELCELIMEI" in val or "TELCELIMEINUEVOFORMATO" in val:
+        if "TELCEL" in val or "TELCELNUEVOFORMATO" in val or "TELCELIMEI" in val or "TELCELIMEINUEVOFORMATO" in val:
             return "TELCEL"
         # AT&T (todas sus variantes)
         if "AT&T" in val or "ATT" in val or "ATTMX" in val or "ATTNUEVOFORMATO" in val:
@@ -89,6 +93,8 @@ def _detect_provider_from_row(row: dict) -> str:
     # 3) Fallback por nombre de archivo (útil cuando DB viene vacío/inconsistente)
     try:
         fname = os.path.basename(row.get("file_path") or row.get("nombre_archivo") or "").upper()
+        if "ALTAN" in fname or "ALTÁN" in fname:
+            return "ALTAN"
         if "AT&T" in fname or "ATT" in fname:
             return "ATT"
         if "MOVISTAR" in fname or "TELEFONICA" in fname or "TELEFÓNICA" in fname:
@@ -102,9 +108,7 @@ def _detect_provider_from_row(row: dict) -> str:
     return "TELCEL"
 
 
-
 def _normalize_inserted_from_result(result) -> int:
-
     try:
         if isinstance(result, int):
             return result
@@ -203,6 +207,7 @@ def process_job_sabana(
     finally:
         db.close()
 
+
 def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = None) -> bool:
     """
     Despacha al ETL correspondiente según la compañía.
@@ -223,7 +228,9 @@ def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = No
         # Fallback extra solo por el nombre del archivo recibido (por si acaso)
         try:
             fname = os.path.basename(local_path).upper()
-            if "AT&T" in fname or "ATT" in fname:
+            if "ALTAN" in fname or "ALTÁN" in fname:
+                provider = "ALTAN"
+            elif "AT&T" in fname or "ATT" in fname:
                 provider = "ATT"
             elif "MOVISTAR" in fname or "TELEFONICA" in fname or "TELEFÓNICA" in fname:
                 provider = "MOVISTAR"
@@ -243,6 +250,14 @@ def run_etl(id_archivo: int, local_path: str, correlation_id: Optional[str] = No
                 id_sabanas=id_archivo,
                 local_path=local_path,
                 correlation_id=correlation_id
+            )
+            inserted = _normalize_inserted_from_result(result)
+
+        elif provider == "ALTAN":
+            result = run_altan_v1_etl(
+                db_session=db,
+                id_sabanas=id_archivo,
+                file_path=local_path
             )
             inserted = _normalize_inserted_from_result(result)
 
