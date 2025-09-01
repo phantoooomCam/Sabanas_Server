@@ -308,16 +308,19 @@ def _estimate_subscriber(df: pd.DataFrame) -> Optional[str]:
     """
     Estimamos el MSISDN del abonado como el Número Origen más frecuente.
     """
-    a = df["NUMERO ORIGEN"].dropna().astype(str)
+    a = df.get("NÚMERO ORIGEN", df.get("NUMERO ORIGEN"))  # <— tolera con/sin acento
+    if a is None:
+        return None
+    a = a.dropna().astype(str)
     if a.empty:
         return None
-    # Limpiar y calcular moda
     a = a.map(_clean_msisdn)
     a = a[a.notna()]
     if a.empty:
         return None
     mode = a.mode()
     return mode.iloc[0] if not mode.empty else None
+
 
 
 def _map_tipo_registro_altan(tipo_com: str, dir_flag: str) -> int:
