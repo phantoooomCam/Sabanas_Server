@@ -1,6 +1,4 @@
 # app/routes.py
-from typing import Optional
-
 from decouple import config
 from fastapi import (
     APIRouter,
@@ -13,6 +11,18 @@ from fastapi import (
 
 from app.domain.schemas import JobSabanasRequest, JobAcceptedResponse
 from app.jobs_service import accept_job_sabana, process_job_sabana  # <- importa funciones del módulo RENOMBRADO
+
+# Conexion con base de datos y schema
+from app.database import SessionLocal
+from app.domain.models import RegistroTelefonico  # Modelo SQLAlchemy
+from app.domain.schemas import RegistroTelefonicoSchema  # Esquema Pydantic para la respuesta
+from typing import Optional,List
+from sqlalchemy.orm import Session
+from app.database import get_db
+
+
+
+
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -77,3 +87,17 @@ def enqueue_sabana_job(
         estado="en_cola",
         correlation_id=correlation_id,
     )
+
+
+@router.get("/registros/{id_sabanas}", response_model=List[RegistroTelefonicoSchema])  # Usa el esquema Pydantic
+async def obtener_registros_telefonicos(id_sabanas: int, db: Session = Depends(get_db)):
+    # Hacer la consulta con SQLAlchemy
+    registros_db = db.query(RegistroTelefonico).filter(RegistroTelefonico.id_sabanas == id_sabanas).all()
+
+    if not registros_db:
+        raise HTTPException(status_code=404, detail="No se encontraron registros para este id_sabana")
+
+    # Convertir los resultados de SQLAlchemy a objetos Pydantic
+    registros = [RegistroTelefonicoSchema.from_orm(registro) for registro in registros_db]
+    
+    return registros
