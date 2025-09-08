@@ -89,15 +89,15 @@ def enqueue_sabana_job(
     )
 
 
-@router.get("/registros/{id_sabanas}", response_model=List[RegistroTelefonicoSchema])  # Usa el esquema Pydantic
-async def obtener_registros_telefonicos(id_sabanas: int, db: Session = Depends(get_db)):
-    # Hacer la consulta con SQLAlchemy
-    registros_db = db.query(RegistroTelefonico).filter(RegistroTelefonico.id_sabanas == id_sabanas).all()
+# @router.get("/registros/{id_sabanas}", response_model=List[RegistroTelefonicoSchema])  # Usa el esquema Pydantic
+# async def obtener_registros_telefonicos(id_sabanas: int, db: Session = Depends(get_db)):
+#     # Hacer la consulta con SQLAlchemy
+#     registros_db = db.query(RegistroTelefonico).filter(RegistroTelefonico.id_sabanas == id_sabanas).all()
 
-    if not registros_db:
-        raise HTTPException(status_code=404, detail="No se encontraron registros para este id_sabana")
+#     if not registros_db:
+#         raise HTTPException(status_code=404, detail="No se encontraron registros para este id_sabana")
 
-    # Convertir los resultados de SQLAlchemy a objetos Pydantic
-    registros = [RegistroTelefonicoSchema.from_orm(registro) for registro in registros_db]
+#     # Convertir los resultados de SQLAlchemy a objetos Pydantic
+#     registros = [RegistroTelefonicoSchema.from_orm(registro) for registro in registros_db]
     
-    return registros
+#     return registros
