@@ -419,7 +419,7 @@ def _normalize_block(df_block: pd.DataFrame, id_sabanas: int, stats: Stats) -> L
     df = df[mask_geo]
 
     # 3) IMEI obligatorio solo para VOZ (por fila)
-    is_voz_row = df["TIPO DE COMUNICACIÓN"].astype(str).strip().str.upper().eq("VOZ")
+    is_voz_row = df["TIPO DE COMUNICACIÓN"].fillna("").str.strip().str.upper().eq("VOZ")
     mask_imei_voz = (~is_voz_row) | df["imei_clean"].notna()
     stats.descartadas_imei_voz += int((~mask_imei_voz).sum())
     df = df[mask_imei_voz]
