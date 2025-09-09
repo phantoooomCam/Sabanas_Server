@@ -89,6 +89,7 @@ def _clean_msisdn(s: Optional[str]) -> Optional[str]:
     d = _only_digits(s)
     if not d or _is_all_zeros(d):
         return None
+    # Regla: >10 → últimos 10; <10 → se conserva
     if len(d) > 10:
         d = d[-10:]
     return d
@@ -135,7 +136,7 @@ def _parse_fecha_hora(
     hora_raw: Optional[str | int | float],
 ) -> Optional[datetime]:
     """
-    Altán suele traer fecha como dd/mm/yyyy y hora como hh:mm:ss (según tu captura),
+    Altán suele traer fecha como dd/mm/yyyy y hora como hh:mm:ss,
     pero aceptamos variantes y también yyyymmdd + hhmmss.
     """
     if fecha_raw is None or hora_raw is None:
@@ -324,7 +325,6 @@ def _estimate_subscriber(df: pd.DataFrame) -> Optional[str]:
     return mode.iloc[0] if not mode.empty else None
 
 
-
 def _map_tipo_registro_altan(tipo_com: str, dir_flag: str) -> int:
     """
     dir_flag: 'ENTRANTE' | 'SALIENTE' | '' (desconocido)
@@ -418,10 +418,8 @@ def _normalize_block(df_block: pd.DataFrame, id_sabanas: int, stats: Stats) -> L
     stats.descartadas_geo += int((~mask_geo).sum())
     df = df[mask_geo]
 
-    # 3) IMEI obligatorio solo para VOZ
-    is_voz = (_infer_provider_type(None) == "VOZ")  # placeholder, corregimos abajo
-    # Recalcular VOZ por fila
-    is_voz_row = df["TIPO DE COMUNICACIÓN"].astype(str).str.strip().str.upper().eq("VOZ")
+    # 3) IMEI obligatorio solo para VOZ (por fila)
+    is_voz_row = df["TIPO DE COMUNICACIÓN"].astype(str).strip().str.upper().eq("VOZ")
     mask_imei_voz = (~is_voz_row) | df["imei_clean"].notna()
     stats.descartadas_imei_voz += int((~mask_imei_voz).sum())
     df = df[mask_imei_voz]
@@ -433,11 +431,22 @@ def _normalize_block(df_block: pd.DataFrame, id_sabanas: int, stats: Stats) -> L
     df["coordenada_objetivo"] = None  # siempre hay geo tras el filtro
 
     # ===== Deduplicación =====
-    # Clave: (numero_origen, fecha_hora, lat, lon) → conservar mayor duración
+    # Clave más específica para no colapsar eventos distintos que comparten A/fecha/geo
     if not df.empty:
         sorted_df = df.sort_values("duracion_s", ascending=False)
+
+        group_cols = [
+            "numero_a_clean",
+            "numero_b_clean",
+            "id_tipo_registro",
+            "fecha_hora",
+            "lat_dec",
+            "lon_dec",
+        ]
+
         idx = (
-            sorted_df.groupby(["numero_a_clean", "fecha_hora", "lat_dec", "lon_dec"], dropna=False)
+            sorted_df
+            .groupby(group_cols, dropna=False)
             .head(1)
             .index
         )
@@ -497,6 +506,13 @@ def run_altan_etl(db_session, id_sabanas: int, file_path: str) -> int:
                 all_rows.extend(rows)
 
         if repository is None:
+            # Log métricas también en modo local/test
+            print(
+                f"[ALTAN ETL] id={id_sabanas} leidas={stats.leidas} "
+                f"validas={stats.validas} desc_numA={stats.descartadas_numero_a} "
+                f"desc_geo={stats.descartadas_geo} desc_imei_voz={stats.descartadas_imei_voz} "
+                f"duplicados={stats.duplicados}"
+            )
             return int(len(all_rows))
 
         # Limpieza previa (mismo archivo)
@@ -507,6 +523,14 @@ def run_altan_etl(db_session, id_sabanas: int, file_path: str) -> int:
         if all_rows and hasattr(repository, "insert_registros_telefonicos_bulk"):
             repository.insert_registros_telefonicos_bulk(db_session, all_rows)
             inserted = len(all_rows)
+
+        # Log de métricas
+        print(
+            f"[ALTAN ETL] id={id_sabanas} leidas={stats.leidas} "
+            f"validas={stats.validas} desc_numA={stats.descartadas_numero_a} "
+            f"desc_geo={stats.descartadas_geo} desc_imei_voz={stats.descartadas_imei_voz} "
+            f"duplicados={stats.duplicados} inserted={inserted}"
+        )
 
         return int(inserted)
     except Exception as e:
