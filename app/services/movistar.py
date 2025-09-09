@@ -101,6 +101,8 @@ def _clean_msisdn(s: Optional[str]) -> Optional[str]:
     d = _only_digits(s)
     if not d or _is_all_zeros(d):
         return None
+    if len(d) > 10:
+        d = d[-10:]
     return d
 
 
