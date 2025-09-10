@@ -5,7 +5,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -66,7 +66,7 @@ _DIGITS = re.compile(r"\D+")
 
 
 def _normalize_colname(c: str) -> str:
-    # Normaliza espacios y mayúsculas (conserva tildes, como en el Excel)
+    # Normaliza espacios y mayúsculas (conserva tildes)
     return re.sub(r"\s+", " ", str(c).strip()).upper()
 
 
@@ -89,7 +89,7 @@ def _clean_msisdn(s: Optional[str]) -> Optional[str]:
     d = _only_digits(s)
     if not d or _is_all_zeros(d):
         return None
-    # Regla: >10 → últimos 10; <10 → se conserva
+    # >10 dígitos → nos quedamos con los últimos 10; <10 → se conserva
     if len(d) > 10:
         d = d[-10:]
     return d
@@ -105,8 +105,7 @@ def _clean_imei(s: Optional[str]) -> Optional[str]:
 
 
 def _pad_left(num: int, width: int) -> str:
-    s = str(num)
-    return s.zfill(width)
+    return str(num).zfill(width)
 
 
 def _parse_duration_to_seconds(x: Optional[str | int | float]) -> int:
@@ -136,7 +135,7 @@ def _parse_fecha_hora(
     hora_raw: Optional[str | int | float],
 ) -> Optional[datetime]:
     """
-    Altán suele traer fecha como dd/mm/yyyy y hora como hh:mm:ss,
+    Altán suele traer fecha dd/mm/yyyy y hora hh:mm(:ss),
     pero aceptamos variantes y también yyyymmdd + hhmmss.
     """
     if fecha_raw is None or hora_raw is None:
@@ -164,7 +163,7 @@ def _parse_fecha_hora(
         except Exception:
             pass
 
-    # 3) fallback robusto
+    # 3) fallback robusto con pandas
     try:
         return pd.to_datetime(f"{f} {h}", dayfirst=True, errors="coerce").to_pydatetime()
     except Exception:
@@ -311,7 +310,7 @@ def _estimate_subscriber(df: pd.DataFrame) -> Optional[str]:
     """
     Estimamos el MSISDN del abonado como el Número Origen más frecuente.
     """
-    a = df.get("NÚMERO ORIGEN", df.get("NUMERO ORIGEN"))  # <— tolera con/sin acento
+    a = df.get("NÚMERO ORIGEN", df.get("NUMERO ORIGEN"))  # tolera con/sin acento
     if a is None:
         return None
     a = a.dropna().astype(str)
@@ -418,7 +417,7 @@ def _normalize_block(df_block: pd.DataFrame, id_sabanas: int, stats: Stats) -> L
     stats.descartadas_geo += int((~mask_geo).sum())
     df = df[mask_geo]
 
-    # 3) IMEI obligatorio solo para VOZ (por fila)
+    # 3) IMEI obligatorio solo para VOZ (⚠️ usar .str, no .strip de Python)
     is_voz_row = df["TIPO DE COMUNICACIÓN"].fillna("").str.strip().str.upper().eq("VOZ")
     mask_imei_voz = (~is_voz_row) | df["imei_clean"].notna()
     stats.descartadas_imei_voz += int((~mask_imei_voz).sum())
@@ -445,8 +444,7 @@ def _normalize_block(df_block: pd.DataFrame, id_sabanas: int, stats: Stats) -> L
         ]
 
         idx = (
-            sorted_df
-            .groupby(group_cols, dropna=False)
+            sorted_df.groupby(group_cols, dropna=False)
             .head(1)
             .index
         )
@@ -506,7 +504,6 @@ def run_altan_etl(db_session, id_sabanas: int, file_path: str) -> int:
                 all_rows.extend(rows)
 
         if repository is None:
-            # Log métricas también en modo local/test
             print(
                 f"[ALTAN ETL] id={id_sabanas} leidas={stats.leidas} "
                 f"validas={stats.validas} desc_numA={stats.descartadas_numero_a} "
@@ -524,7 +521,6 @@ def run_altan_etl(db_session, id_sabanas: int, file_path: str) -> int:
             repository.insert_registros_telefonicos_bulk(db_session, all_rows)
             inserted = len(all_rows)
 
-        # Log de métricas
         print(
             f"[ALTAN ETL] id={id_sabanas} leidas={stats.leidas} "
             f"validas={stats.validas} desc_numA={stats.descartadas_numero_a} "
