@@ -186,6 +186,15 @@ def _find_table_in_sheet(df_raw: pd.DataFrame) -> Optional[pd.DataFrame]:
         return None
     raw_headers = df_raw.iloc[best_idx, :].tolist()
     canon_headers = [_canon_name(h) for h in raw_headers]
+    # DEBUG: mostrar headers detectados y primeras filas crudas para verificar alineación
+    try:
+        print(f"[DEBUG] best_idx={best_idx} best_score={best_score} raw_headers={raw_headers}")
+        print(f"[DEBUG] canon_headers={canon_headers}")
+        # mostrar 3 filas siguientes crudas para inspección
+        sample_rows = df_raw.iloc[best_idx:best_idx+4, :].fillna("").astype(str).apply(lambda r: r.tolist(), axis=1).tolist()
+        print(f"[DEBUG] sample_rows_after_header={sample_rows}")
+    except Exception:
+        pass
     df = df_raw.iloc[best_idx + 1 :].copy()
     df.columns = canon_headers
     df = df.dropna(axis=1, how="all")
@@ -230,9 +239,31 @@ _FORMATOS_DATETIME = [
 ]
 
 def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
-    f = fecha.astype(str).str.strip().str.replace(r"[./]", "-", regex=True)
-    h = hora.astype(str).str.strip()
-    combo = (f + " " + h).reset_index(drop=True)  # 🔑 índices 0..N-1
+    # Normalizar y preparar la parte de fecha
+    f = fecha.fillna("").astype(str).str.strip().str.replace(r"[./]", "-", regex=True).str.lower()
+    f = f.str.replace(r"\bde\b", " ", regex=True).str.replace(",", " ", regex=False)
+    f = f.str.replace(r"\s+", " ", regex=True).str.strip()
+
+    # Mapear nombres/abreviaturas de meses en español a número
+    month_map = {
+        "enero": "01", "ene": "01",
+        "febrero": "02", "feb": "02",
+        "marzo": "03", "mar": "03",
+        "abril": "04", "abr": "04",
+        "mayo": "05", "may": "05",
+        "junio": "06", "jun": "06",
+        "julio": "07", "jul": "07",
+        "agosto": "08", "ago": "08",
+        "septiembre": "09", "sep": "09", "setiembre": "09",
+        "octubre": "10", "oct": "10",
+        "noviembre": "11", "nov": "11",
+        "diciembre": "12", "dic": "12"
+    }
+    for name, num in month_map.items():
+        f = f.str.replace(rf"\b{name}\b", num, regex=True)
+
+    h = hora.fillna("").astype(str).str.strip()
+    combo = (f + " " + h).reset_index(drop=True)
 
     ts = pd.Series([pd.NaT] * len(combo), index=combo.index)
 
@@ -243,11 +274,23 @@ def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
         if ts.notna().all():
             break
 
-    # Fallback solo para los que siguen NaT
+    # Fallback general usando dayfirst (intenta parsear fechas textuales)
     if ts.isna().any():
         mask = ts.isna()
         fallback = pd.to_datetime(combo[mask], dayfirst=True, errors="coerce")
         ts[mask] = fallback
+
+    # DEBUG: detectar parseos con año inusualmente futuro y mostrar crudo
+    try:
+        import datetime
+        now = datetime.datetime.now()
+        threshold_year = now.year + 1
+        bad_idx = [i for i, v in enumerate(ts) if isinstance(v, pd.Timestamp) and v.year > threshold_year]
+        if bad_idx:
+            for i in bad_idx:
+                print(f"[DEBUG] Fecha parseada FUTURA index={i} combo_raw='{combo.iloc[i]}' parsed='{ts.iloc[i]}' fecha_raw='{fecha.iloc[i]}' hora_raw='{hora.iloc[i]}'")
+    except Exception:
+        pass
 
     return ts
 
@@ -259,6 +302,12 @@ def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
 # Normalización de filas
 def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
     cols = set(map(str, tbl.columns))
+
+    # DEBUG: mostrar columnas detectadas antes de parsear
+    try:
+        print(f"[DEBUG] _frame_to_rows columns={cols}")
+    except Exception:
+        pass
 
     if "fecha" in cols and "hora" in cols:
         fecha_hora = _parse_fecha_hora(tbl["fecha"], tbl["hora"])
@@ -402,7 +451,25 @@ def run_telcel_v1_etl(id_sabanas: int, local_path: str, correlation_id: Optional
     db = SessionLocal()
     try:
         repo.delete_registros_telefonicos_by_archivo(db, id_sabanas)
+
+        # --- CHECK: detectar fechas FUTURAS antes de insertar (debug y abort opcional) ---
+        import datetime
+        now = datetime.datetime.now()
+        threshold_year = now.year + 1
+        bad = [r for r in all_rows if r.get("fecha_hora") is not None and getattr(r["fecha_hora"], "year", 0) > threshold_year]
+        if bad:
+            print(f"[{correlation_id}] ERROR: Se detectaron {len(bad)} filas con año > {threshold_year}. Primeros ejemplos:")
+            for b in bad[:10]:
+                print(f"[{correlation_id}]   {b}")
+            # opcional: no insertar si hay datos claramente corruptos
+            # return -1
+
         if all_rows:
+            # DEBUG: volcar 5 primeras filas tal cual se envían al repo (antes de insertar)
+            print(f"[{correlation_id}] DEBUG: primeras 5 filas que se insertarán:")
+            for r in all_rows[:5]:
+                print(f"[{correlation_id}]   {r}")
+
             repo.insert_registros_telefonicos_bulk(db, all_rows)
         print(f"[{correlation_id}] Telcel v1: insertadas {len(all_rows)} filas "
               f"(id_sabanas={id_sabanas}), {len(unique_imeis)} IMEIs únicos, {len(unique_imsis)} IMSIs únicos")
