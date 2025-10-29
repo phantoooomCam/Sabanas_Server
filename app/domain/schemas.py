@@ -35,7 +35,7 @@ class RegistroTelefonicoSchema(BaseModel):
     imei: Optional[str] = None  # Esto hace que 'imei' sea opcional
     telefono: Optional[str] = None  # Esto hace que 'telefono' sea opcional
 
-    class Config:
+    class config:
         orm_mode = True  # Para habilitar la conversión de SQLAlchemy a Pydantic
         from_attributes = True  # Habilitar el uso de from_orm
         anystr_strip_whitespace = True  # Eliminar espacios en blanco en cadenas de texto

@@ -1,0 +1,22 @@
+# Ignore VCS and local caches
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local environment files (compose will load env_file instead)
+.env
+
+# Node/site artifacts
+sitio/
+node_modules/
