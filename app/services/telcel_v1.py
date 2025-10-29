@@ -228,17 +228,17 @@ def _load_all_sheets(local_path: str) -> List[pd.DataFrame]:
 # Parseo robusto de fecha/hora (intenta varios formatos comunes Telcel)
 # -------------------------------------------------------------------
 _FORMATOS_DATETIME = [
-    "%d/%m/%Y %H:%M:%S",
-    "%d/%m/%y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",           # Año completo estándar
     "%d-%m-%Y %H:%M:%S",
-    "%d-%m-%y %H:%M:%S",
-    "%d/%m/%Y %H:%M",   # <-- sin segundos
-    "%d/%m/%y %H:%M",   # <-- sin segundos
-    "%d-%m-%Y %H:%M",   # <-- sin segundos
-    "%d-%m-%y %H:%M",   # <-- sin segundos
+    "%d/%m/%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M",
 ]
 
 def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
+    import datetime
+    
     # Normalizar y preparar la parte de fecha
     f = fecha.fillna("").astype(str).str.strip().str.replace(r"[./]", "-", regex=True).str.lower()
     f = f.str.replace(r"\bde\b", " ", regex=True).str.replace(",", " ", regex=False)
@@ -266,36 +266,151 @@ def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
     combo = (f + " " + h).reset_index(drop=True)
 
     ts = pd.Series([pd.NaT] * len(combo), index=combo.index)
+    now = datetime.datetime.now()
+    threshold_year = now.year + 1
 
-    for fmt in _FORMATOS_DATETIME:
-        cand = pd.to_datetime(combo, format=fmt, errors="coerce")
-        if cand.notna().sum() > ts.notna().sum():
-            ts = cand
-        if ts.notna().all():
-            break
+    print(f"[DEBUG] Primeros 5 combos para parsear: {combo.head(5).tolist()}")
+    print(f"[DEBUG] Últimos 5 combos para parsear: {combo.tail(5).tolist()}")
+    
+    # Parsear manualmente años de 2 dígitos
+    pattern_2digit_year = re.compile(r'^(\d{2})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$')
+    
+    # Detectar formato Excel específico "YYYY-MM-DD HH:MM:SS HH:MM:SS"
+    pattern_excel_double = re.compile(r'^(\d{4})-(\d{2})-(\d{2})\s+\d{2}:\d{2}:\d{2}\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$')
+    
+    parsed_examples = []
+    excel_format_count = 0
+    manual_2digit_count = 0
+    
+    for i in range(len(combo)):
+        val = combo.iloc[i]
+        
+        # Intentar formato Excel duplicado primero
+        match_excel = pattern_excel_double.match(val)
+        if match_excel:
+            year, month, day, hour, minute, second = match_excel.groups()
+            second = second if second else "00"
+            
+            try:
+                dt = datetime.datetime(
+                    year=int(year),
+                    month=int(month),
+                    day=int(day),
+                    hour=int(hour),
+                    minute=int(minute),
+                    second=int(second)
+                )
+                
+                if dt.year <= threshold_year:
+                    ts.iloc[i] = dt
+                    excel_format_count += 1
+                    if len(parsed_examples) < 3:
+                        parsed_examples.append({"type": "excel_double", "raw": val, "parsed": dt})
+                    continue
+            except Exception:
+                pass
+        
+        # Intentar formato de 2 dígitos
+        match_2d = pattern_2digit_year.match(val)
+        if match_2d:
+            day, month, year_2d, hour, minute, second = match_2d.groups()
+            second = second if second else "00"
+            
+            year_int = int(year_2d)
+            if year_int <= 50:
+                year_full = 2000 + year_int
+            else:
+                year_full = 1900 + year_int
+            
+            try:
+                dt = datetime.datetime(
+                    year=year_full,
+                    month=int(month),
+                    day=int(day),
+                    hour=int(hour),
+                    minute=int(minute),
+                    second=int(second)
+                )
+                
+                if dt.year <= threshold_year:
+                    ts.iloc[i] = dt
+                    manual_2digit_count += 1
+                    if len(parsed_examples) < 3:
+                        parsed_examples.append({
+                            "type": "2digit",
+                            "raw": val,
+                            "parsed": dt,
+                            "year_2d": year_2d,
+                            "year_full": year_full
+                        })
+            except Exception:
+                pass
 
-    # Fallback general usando dayfirst (intenta parsear fechas textuales)
-    if ts.isna().any():
+    print(f"[DEBUG] Parseadas manualmente - Excel doble: {excel_format_count}, 2 dígitos: {manual_2digit_count}")
+    if parsed_examples:
+        print(f"[DEBUG] Ejemplos de parseo manual:")
+        for ex in parsed_examples:
+            print(f"  tipo={ex['type']} raw='{ex['raw']}' -> parsed={ex['parsed']}")
+
+    manual_parsed = ts.notna().sum()
+    
+    # Para las que no se parsearon manualmente, intentar formatos estándar
+    if manual_parsed < len(combo):
         mask = ts.isna()
-        fallback = pd.to_datetime(combo[mask], dayfirst=True, errors="coerce")
-        ts[mask] = fallback
+        for fmt in _FORMATOS_DATETIME:
+            try:
+                cand = pd.to_datetime(combo[mask], format=fmt, errors="coerce")
+                valid_count = cand.notna().sum()
+                if valid_count > 0:
+                    valid_dates = cand[cand.notna()]
+                    future_dates = valid_dates[valid_dates.dt.year > threshold_year]
+                    if len(future_dates) == 0:
+                        ts[mask] = cand
+                        print(f"[DEBUG] Formato exitoso: {fmt}, filas válidas: {valid_count}")
+                        break
+                    else:
+                        print(f"[DEBUG] Formato {fmt} rechazado: {len(future_dates)} fechas futuras detectadas")
+            except Exception as e:
+                # Ignorar errores de regex y continuar
+                print(f"[DEBUG] Error con formato {fmt}: {str(e)[:100]}")
+                continue
 
-    # DEBUG: detectar parseos con año inusualmente futuro y mostrar crudo
-    try:
-        import datetime
-        now = datetime.datetime.now()
-        threshold_year = now.year + 1
-        bad_idx = [i for i, v in enumerate(ts) if isinstance(v, pd.Timestamp) and v.year > threshold_year]
-        if bad_idx:
-            for i in bad_idx:
-                print(f"[DEBUG] Fecha parseada FUTURA index={i} combo_raw='{combo.iloc[i]}' parsed='{ts.iloc[i]}' fecha_raw='{fecha.iloc[i]}' hora_raw='{hora.iloc[i]}'")
-    except Exception:
-        pass
+    # Fallback final con dayfirst (solo si menos del 90% está parseado)
+    if ts.notna().sum() < len(combo) * 0.9:
+        mask = ts.isna()
+        print(f"[DEBUG] Aplicando fallback dayfirst para {mask.sum()} filas restantes")
+        
+        try:
+            fallback = pd.to_datetime(combo[mask], dayfirst=True, yearfirst=False, errors="coerce")
+            
+            # Filtrar fechas futuras del fallback
+            valid_fallback = 0
+            rejected_fallback = 0
+            for i in fallback.index:
+                if pd.notna(fallback[i]):
+                    if fallback[i].year <= threshold_year:
+                        ts[i] = fallback[i]
+                        valid_fallback += 1
+                    else:
+                        rejected_fallback += 1
+            
+            print(f"[DEBUG] Fallback: {valid_fallback} aceptadas, {rejected_fallback} rechazadas por fecha futura")
+        except Exception as e:
+            print(f"[DEBUG] Error en fallback: {str(e)[:100]}")
+
+    # DEBUG: detectar fechas futuras finales
+    bad_idx = [i for i, v in enumerate(ts) if isinstance(v, pd.Timestamp) and v.year > threshold_year]
+    if bad_idx:
+        print(f"[ADVERTENCIA] {len(bad_idx)} fechas futuras después del parseo:")
+        for i in bad_idx[:10]:
+            print(f"  index={i} combo='{combo.iloc[i]}' parsed='{ts.iloc[i]}'")
+
+    parsed_count = ts.notna().sum()
+    print(f"[DEBUG] Total parseado: {parsed_count}/{len(combo)}")
+    if parsed_count > 0:
+        print(f"[DEBUG] Rango final: {ts.min()} a {ts.max()}")
 
     return ts
-
-
-
 
 
 # -------------------------------------------------------------------
@@ -317,6 +432,14 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
     else:
         fecha_hora = pd.Series([pd.NaT] * len(tbl))
 
+    # DEBUG: Verificar la serie de fecha_hora ANTES de iterar
+    print(f"[DEBUG] Tipo de fecha_hora: {type(fecha_hora)}")
+    print(f"[DEBUG] Primeras 3 fechas en fecha_hora antes de iterar:")
+    for i in range(min(3, len(fecha_hora))):
+        if pd.notna(fecha_hora.iloc[i]):
+            val = fecha_hora.iloc[i]
+            print(f"  [{i}] tipo={type(val)} valor={val} repr={repr(val)}")
+
     durac = pd.to_numeric(tbl.get("durac_seg"), errors="coerce")
     numero_a = tbl.get("numero_a")
     numero_b = tbl.get("numero_b")
@@ -330,6 +453,18 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
     rows: List[Dict] = []
     for i in range(len(tbl)):
         fa = fecha_hora.iloc[i]
+        
+        # DEBUG: Verificar el valor ANTES de convertir
+        if i < 3:  # solo primeras 3 filas
+            print(f"[DEBUG] Fila {i}: fa antes de conversión: tipo={type(fa)} valor={fa} repr={repr(fa)}")
+
+        # Conversión a datetime de Python
+        fecha_hora_final = None
+        if isinstance(fa, pd.Timestamp) and not pd.isna(fa):
+            fecha_hora_final = fa.to_pydatetime()
+            # DEBUG: Verificar DESPUÉS de conversión
+            if i < 3:
+                print(f"[DEBUG] Fila {i}: fecha_hora_final después de to_pydatetime(): {fecha_hora_final}")
 
         # ---------------------------
         # Normalizar duración
@@ -383,12 +518,12 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
         # Altitud = 0 siempre; coordenada_objetivo = False solo si no hay coords
         coord_obj = False if (lat_d is None and lon_d is None) else None
 
-        rows.append({
+        row_dict = {
             "id_sabanas": int(id_sabanas),
             "numero_a": a,
             "numero_b": b,
             "id_tipo_registro": id_tipo,
-            "fecha_hora": (fa.to_pydatetime() if isinstance(fa, pd.Timestamp) and not pd.isna(fa) else None),
+            "fecha_hora": fecha_hora_final,
             "duracion": dur,
             "latitud": str(lat_val) if lat_val not in (None, "", "NaN") else None,
             "longitud": str(lon_val) if lon_val not in (None, "", "NaN") else None,
@@ -399,7 +534,13 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
             "coordenada_objetivo": coord_obj,
             "imei": imei,
             "telefono": tel,
-        })
+        }
+        
+        # DEBUG: Mostrar las primeras 3 filas completas
+        if i < 3:
+            print(f"[DEBUG] Fila {i} completa antes de append: {row_dict}")
+        
+        rows.append(row_dict)
 
     def _is_meaningful(r: Dict) -> bool:
         # No insertar si imei, latitud, longitud o azimuth están vacíos/nulos
@@ -411,8 +552,12 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
             return False
         return True
 
-
-    return [r for r in rows if _is_meaningful(r)]
+    filtered_rows = [r for r in rows if _is_meaningful(r)]
+    
+    print(f"[DEBUG] Total filas antes de filtrar: {len(rows)}")
+    print(f"[DEBUG] Total filas después de filtrar: {len(filtered_rows)}")
+    
+    return filtered_rows
 
 
 # -------------------------------------------------------------------
