@@ -3,5 +3,5 @@ uvicorn[standard]
 sqlalchemy
 psycopg2-binary
 pandas
-decouple
 openpyxl
+python-decouple==3.8

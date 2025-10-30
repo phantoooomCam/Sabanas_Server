@@ -3,17 +3,17 @@ version: '3.8'
 services:
   sabanas_api:
     image: sabanas:1.0
-    build: .
+    build: 
+      context: ./
+      dockerfile: dockerfile
     container_name: SABANAS-API
     ports:
-      - "8000:8000"
+      - "8001:8001"
     env_file:
-      - ./app/.env
+      -  app/.env
     networks:
       - sabanas_net
-    command:
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
+    
 networks:
   sabanas_net:
     driver: bridge
