@@ -10,8 +10,7 @@ app.include_router(jobs_router)
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://192.168.100.92:5173",   # 👈 tu front Vite en la misma IP, puerto 5173
-    # agrega también el dominio/puerto que uses en producción cuando lo tengas
+    "http://192.168.100.92:5173",
 ]
 
 app.add_middleware(
