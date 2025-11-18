@@ -26,15 +26,13 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # decouple lee el .env automáticamente
 SERVICE_API_KEY = config("SERVICE_API_KEY", default="")
 
-def require_api_key(
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+async def require_api_key(
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None)
 ):
-    """
-    Valida la API key de servicio. Acepta:
-      - x-api-key: <clave>
-      - Authorization: Bearer <clave>
-    """
+    print(f"DEBUG: x_api_key recibido = {x_api_key}")
+    print(f"DEBUG: authorization recibido = {authorization}")
+    
     expected = SERVICE_API_KEY
     token = x_api_key or (authorization.replace("Bearer ", "") if authorization else None)
 
