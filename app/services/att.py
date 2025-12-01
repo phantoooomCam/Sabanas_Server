@@ -484,12 +484,34 @@ def _frame_to_rows_att(tbl: pd.DataFrame, id_sabanas: int, telefono_archivo: Opt
             "telefono": tel,
         })
 
-    # Filtro relajado: conservar registros útiles aunque falten azimuth/imei/coords
+    # Filtro más estricto (similar a Telcel):
+    # Solo conservamos registros que realmente sirven para análisis espacial / co-localización.
     def _is_meaningful_att(r: Dict) -> bool:
+        # 1) Debe tener fecha/hora válida
         if r.get("fecha_hora") is None:
             return False
+
+        # 2) Debe tener algún identificador de línea (número A o teléfono)
         if not (r.get("numero_a") or r.get("telefono")):
             return False
+
+        # 3) Debe tener latitud y longitud crudas (texto) para saber que hay coordenadas
+        if not r.get("latitud") or not r.get("longitud"):
+            return False
+
+        # 4) Debe tener latitud y longitud decimales válidas (no nulas y no 0)
+        lat_dec = r.get("latitud_decimal")
+        lon_dec = r.get("longitud_decimal")
+        if lat_dec is None or lon_dec is None:
+            return False
+        if lat_dec == 0.0 or lon_dec == 0.0:
+            return False
+
+        # 5) Debe tener azimuth válido (no nulo, no 0, no vacío)
+        az = r.get("azimuth")
+        if az is None or az == 0 or az == "":
+            return False
+
         return True
 
     return [r for r in rows if _is_meaningful_att(r)]
