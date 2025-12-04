@@ -102,10 +102,18 @@ def _clean_imei(x: str) -> Optional[str]:
 def _dms_to_decimal(s: str) -> Optional[float]:
     if s is None:
         return None
-    s = str(s).strip().replace(",", ".").replace(""", '"').replace(""", '"')
+    # Convertir a string y verificar valores inválidos
+    s_str = str(s).strip().lower()
+    if s_str in ("", "nan", "none", "null", "na", "n/a"):
+        return None
+    s = s_str.replace(",", ".").replace(""", '"').replace(""", '"')
     if "°" not in s and "'" not in s and '"' not in s:
         try:
-            return float(s)
+            val = float(s)
+            # Verificar si es NaN
+            if math.isnan(val):
+                return None
+            return val
         except Exception:
             return None
     m = DMS_RE.match(s)
@@ -402,8 +410,17 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
 
         lat_val = lat_raw.iloc[i] if lat_raw is not None else None
         lon_val = lon_raw.iloc[i] if lon_raw is not None else None
-        lat_d = _dms_to_decimal(lat_val) if lat_val not in (None, "", "NaN") else None
-        lon_d = _dms_to_decimal(lon_val) if lon_val not in (None, "", "NaN") else None
+        
+        # Validar y limpiar valores antes de conversión
+        lat_val_str = str(lat_val).strip().lower() if lat_val is not None else ""
+        lon_val_str = str(lon_val).strip().lower() if lon_val is not None else ""
+        
+        # Detectar valores inválidos (None, vacío, nan, etc.)
+        lat_is_valid = lat_val_str and lat_val_str not in ("none", "nan", "null", "na", "n/a")
+        lon_is_valid = lon_val_str and lon_val_str not in ("none", "nan", "null", "na", "n/a")
+        
+        lat_d = _dms_to_decimal(lat_val) if lat_is_valid else None
+        lon_d = _dms_to_decimal(lon_val) if lon_is_valid else None
         imei = _clean_imei(imei_raw.iloc[i]) if imei_raw is not None else None
 
         raw_tel = tel_raw.iloc[i] if tel_raw is not None else None
@@ -424,8 +441,8 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
             "id_tipo_registro": id_tipo,
             "fecha_hora": fecha_hora_final,
             "duracion": dur,
-            "latitud": str(lat_val) if lat_val not in (None, "", "NaN") else None,
-            "longitud": str(lon_val) if lon_val not in (None, "", "NaN") else None,
+            "latitud": str(lat_val) if lat_is_valid and lat_val not in (None, "") else None,
+            "longitud": str(lon_val) if lon_is_valid and lon_val not in (None, "") else None,
             "azimuth": az,
             "latitud_decimal": float(lat_d) if lat_d is not None else None,
             "longitud_decimal": float(lon_d) if lon_d is not None else None,
@@ -440,7 +457,11 @@ def _frame_to_rows(tbl: pd.DataFrame, id_sabanas: int) -> List[Dict]:
     def _is_meaningful(r: Dict) -> bool:
         if not r.get("imei"):
             return False
+        # Verificar que latitud y longitud no estén vacías
         if not r.get("latitud") or not r.get("longitud"):
+            return False
+        # Verificar que las conversiones a decimal sean válidas
+        if r.get("latitud_decimal") is None or r.get("longitud_decimal") is None:
             return False
         if r.get("azimuth") in (None, 0, "", "NaN"):
             return False

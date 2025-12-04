@@ -220,16 +220,24 @@ def _to_decimal(coord: Optional[str | float | int]) -> Optional[float]:
         return None
 
     if isinstance(coord, (int, float)):
-        return float(coord)
+        val = float(coord)
+        # Verificar si es NaN
+        if math.isnan(val):
+            return None
+        return val
 
-    s = str(coord).strip()
-    if s == "":
+    s = str(coord).strip().lower()
+    if s in ("", "nan", "none", "null", "na", "n/a"):
         return None
 
     # decimal con coma
     s_dot = s.replace(",", ".")
     try:
-        return float(s_dot)
+        val = float(s_dot)
+        # Verificar si es NaN
+        if math.isnan(val):
+            return None
+        return val
     except Exception:
         pass
 
@@ -475,6 +483,10 @@ def _normalize_rows(df: pd.DataFrame, id_sabanas: int, stats: Stats) -> List[Dic
         without_coords = without_coords.loc[idx2]
 
     final = pd.concat([with_coords, without_coords], axis=0, ignore_index=True)
+    
+    # Filtrar solo registros con coordenadas válidas
+    final = final[final["lat_dec"].notna() & final["lon_dec"].notna()]
+    
     stats.validas += len(final)
     
     final = final.sort_values(["fecha_hora", "numero_a_clean", "numero_b_clean"], ascending=[True, True, True]).reset_index(drop=True)

@@ -124,10 +124,18 @@ def _clean_imei(x: str) -> Optional[str]:
 def _dms_to_decimal(s: str) -> Optional[float]:
     if s is None:
         return None
-    s = str(s).strip().replace(",", ".").replace("”", '"').replace("“", '"')
+    # Convertir a string y verificar valores inválidos
+    s_str = str(s).strip().lower()
+    if s_str in ("", "nan", "none", "null", "na", "n/a"):
+        return None
+    s = s_str.replace(",", ".").replace(""", '"').replace(""", '"')
     if "°" not in s and "'" not in s and '"' not in s:
         try:
-            return float(s)
+            val = float(s)
+            # Verificar si es NaN
+            if math.isnan(val):
+                return None
+            return val
         except Exception:
             return None
     m = DMS_RE.match(s)
@@ -186,6 +194,7 @@ def _pick_last_nonzero(value: Optional[str]) -> Optional[str]:
 
 # -------------------------------------------------------------------
 # Mapeo de columnas canónicas (con alias AT&T)
+# -------------------------------------------------------------------
 CANON_COLS_MAP = {
     "telefono": "telefono",
     "teléfono": "telefono",
@@ -285,31 +294,85 @@ def _load_all_sheets(local_path: str) -> List[pd.DataFrame]:
 # Fecha / hora
 # -------------------------------------------------------------------
 _FORMATOS_DATETIME = [
-    "%d/%m/%Y %H:%M:%S",
-    "%d/%m/%y %H:%M:%S",
+    "%d-%m-%y %H:%M:%S",   # Formato de texto: 04-06-25 0:16:06
     "%d-%m-%Y %H:%M:%S",
-    "%d-%m-%y %H:%M:%S",
-    "%d/%m/%Y %H:%M",
-    "%d/%m/%y %H:%M",
-    "%d-%m-%Y %H:%M",
+    "%d/%m/%y %H:%M:%S",
+    "%d/%m/%Y %H:%M:%S",
     "%d-%m-%y %H:%M",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%y %H:%M",
+    "%d/%m/%Y %H:%M",
+    "%Y-%m-%d %H:%M:%S",   # Formato ISO cuando Excel serializa fechas
 ]
 
 def _parse_fecha_hora(fecha: pd.Series, hora: pd.Series) -> pd.Series:
-    f = fecha.astype(str).str.strip().str.replace(r"[./]", "-", regex=True)
+    """
+    Parsea fecha y hora de AT&T.
+    Maneja dos casos:
+    1. Texto: 04-06-25 + 0:16:06
+    2. Datetime de Excel: 2024-12-15 00:00:00 + 13:46:08
+    """
+    # Intentar parsear fecha como datetime primero (puede venir serializada de Excel)
+    fecha_dt = pd.to_datetime(fecha, errors='coerce')
+    
+    # Si la fecha ya es datetime (viene de Excel), extraer solo la parte de fecha
+    if fecha_dt.notna().any():
+        # Convertir a solo fecha (YYYY-MM-DD)
+        f = fecha_dt.dt.strftime('%Y-%m-%d')
+    else:
+        # Si no es datetime, limpiar como texto
+        f = fecha.astype(str).str.strip()
+        # Normalizar separadores a guión
+        f = f.str.replace(r"[./]", "-", regex=True)
+    
+    # Limpiar y normalizar hora
     h = hora.astype(str).str.strip()
+    
+    # Normalizar horas con un solo dígito: "0:16:06" -> "00:16:06"
+    def normalize_hour(time_str):
+        if pd.isna(time_str) or str(time_str).strip() == "":
+            return time_str
+        parts = str(time_str).strip().split(":")
+        if len(parts) >= 2:
+            # Si la hora tiene solo 1 dígito, agregar cero inicial
+            if len(parts[0]) == 1:
+                parts[0] = parts[0].zfill(2)
+            return ":".join(parts)
+        return time_str
+    
+    h = h.apply(normalize_hour)
+    
+    # Combinar fecha + hora
     combo = (f + " " + h).reset_index(drop=True)
+    
+    # Inicializar serie de resultados
     ts = pd.Series([pd.NaT] * len(combo), index=combo.index)
+    
+    # Intentar formatos específicos en orden de prioridad
     for fmt in _FORMATOS_DATETIME:
-        cand = pd.to_datetime(combo, format=fmt, errors="coerce")
-        if cand.notna().sum() > ts.notna().sum():
-            ts = cand
-        if ts.notna().all():
-            break
+        try:
+            cand = pd.to_datetime(combo, format=fmt, errors="coerce")
+            valid_count = cand.notna().sum()
+            
+            # Si este formato funciona mejor, usarlo
+            if valid_count > ts.notna().sum():
+                ts = cand
+                
+            # Si parseamos todo exitosamente, terminar
+            if ts.notna().all():
+                break
+        except Exception:
+            continue
+    
+    # Fallback: usar dayfirst=True para formatos que no matchearon
     if ts.isna().any():
         mask = ts.isna()
-        fallback = pd.to_datetime(combo[mask], dayfirst=True, errors="coerce")
-        ts[mask] = fallback
+        try:
+            fallback = pd.to_datetime(combo[mask], dayfirst=True, errors="coerce")
+            ts[mask] = fallback
+        except Exception as e:
+            print(f"Warning: Error en fallback de fecha: {e}")
+    
     return ts
 
 
@@ -499,12 +562,10 @@ def _frame_to_rows_att(tbl: pd.DataFrame, id_sabanas: int, telefono_archivo: Opt
         if not r.get("latitud") or not r.get("longitud"):
             return False
 
-        # 4) Debe tener latitud y longitud decimales válidas (no nulas y no 0)
+        # 4) Debe tener latitud y longitud decimales válidas (no nulas)
         lat_dec = r.get("latitud_decimal")
         lon_dec = r.get("longitud_decimal")
         if lat_dec is None or lon_dec is None:
-            return False
-        if lat_dec == 0.0 or lon_dec == 0.0:
             return False
 
         # 5) Debe tener azimuth válido (no nulo, no 0, no vacío)

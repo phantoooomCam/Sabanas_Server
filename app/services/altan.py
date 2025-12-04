@@ -185,16 +185,24 @@ def _to_decimal(coord: Optional[str | float | int]) -> Optional[float]:
     if coord is None or (isinstance(coord, float) and math.isnan(coord)):
         return None
     if isinstance(coord, (int, float)):
-        return float(coord)
+        val = float(coord)
+        # Verificar si es NaN
+        if math.isnan(val):
+            return None
+        return val
 
-    s = str(coord).strip()
-    if s == "":
+    s = str(coord).strip().lower()
+    if s in ("", "nan", "none", "null", "na", "n/a"):
         return None
 
     # decimal con coma
     s_dot = s.replace(",", ".")
     try:
-        return float(s_dot)
+        val = float(s_dot)
+        # Verificar si es NaN
+        if math.isnan(val):
+            return None
+        return val
     except Exception:
         pass
 
